@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 
 // ========== Icons ==========
@@ -132,7 +131,7 @@ const buildChironConfig = (config) => {
 };
 
 const sendChironStatus = async (status, trip, cfg) => {
-  const res = await fetch('https://taxi-os-v2.onrender.com/api/chiron/send', {
+  const res = await fetch('https://taxi-os-v2.onrender.com//api/chiron/send', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ status, trip, cfg })
@@ -163,12 +162,9 @@ const formatGps = (lat, lng) => {
 };
 
 const calcInvoice = (price, config) => {
-  // Treat incoming price as TTC (price paid by client)
   const ttc = Number(price || 0);
-  // VAT rate is configurable (default 6% => 0.06)
   const cfgRate = config && typeof config.vatRate === 'number' ? config.vatRate : 0.06;
   const vatRate = cfgRate <= 0 ? 0.06 : cfgRate;
-  // Convert TTC -> HT using current VAT
   const net = +(ttc / (1 + vatRate)).toFixed(2);
   const vat = +(ttc - net).toFixed(2);
   const total = ttc;
@@ -365,9 +361,7 @@ const reverseGeocode = async (lat, lng) => {
   try {
     const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}`;
     const res = await fetch(url, {
-      headers: {
-        'Accept': 'application/json'
-      }
+      headers: { 'Accept': 'application/json' }
     });
     if (!res.ok) return null;
     const data = await res.json();
@@ -377,10 +371,177 @@ const reverseGeocode = async (lat, lng) => {
   }
 };
 
+// ========== Price Calculator (Modal before trip) ==========
+const PriceCalculatorModal = ({ config, onClose }) => {
+  const [pickup, setPickup] = useState('');
+  const [destination, setDestination] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState('');
+
+  const geocode = async (query) => {
+    const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(
+      query
+    )}`;
+    const res = await fetch(url, {
+      headers: { 'Accept': 'application/json' }
+    });
+    if (!res.ok) throw new Error('Geocoding failed');
+    const data = await res.json();
+    if (!data || !data.length) throw new Error('لم يتم العثور على العنوان');
+    const item = data[0];
+    return {
+      lat: parseFloat(item.lat),
+      lng: parseFloat(item.lon),
+      label: item.display_name
+    };
+  };
+
+  const calcFare = (distanceKm, durationMin) => {
+    const baseFare = Number(config.baseFare || 5);
+    const kmRate = Number(config.kmRate || 1.8);
+    let fare = baseFare + distanceKm * kmRate;
+    // تقريب لأقرب نصف يورو
+    fare = Math.round(fare * 2) / 2;
+    return fare;
+  };
+
+  const handleUseCurrentGps = async () => {
+    setError('');
+    if (!('geolocation' in navigator)) {
+      setError('GPS غير متوفر في هذا الجهاز.');
+      return;
+    }
+    setLoading(true);
+    try {
+      const pos = await new Promise((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 8000
+        });
+      });
+      const lat = pos.coords.latitude;
+      const lng = pos.coords.longitude;
+      const addr = await reverseGeocode(lat, lng);
+      setPickup(addr || `${lat.toFixed(6)}, ${lng.toFixed(6)}`);
+    } catch (e) {
+      setError('تعذر الحصول على موقع GPS.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCalculate = async () => {
+    setError('');
+    setResult(null);
+
+    if (!pickup || !destination) {
+      setError('يرجى إدخال عنوان الانطلاق والوجهة.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const from = await geocode(pickup);
+      const to = await geocode(destination);
+
+      const url = `https://router.project-osrm.org/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}?overview=false`;
+      const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+      if (!res.ok) throw new Error('Routing failed');
+      const data = await res.json();
+      if (!data.routes || !data.routes.length) {
+        throw new Error('لم يتم العثور على مسار بين النقطتين.');
+      }
+      const route = data.routes[0];
+      const distanceKm = route.distance / 1000; // m → km
+      const durationMin = route.duration / 60; // s → min
+      const fare = calcFare(distanceKm, durationMin);
+
+      setResult({
+        from,
+        to,
+        distanceKm,
+        durationMin,
+        fare
+      });
+    } catch (e) {
+      console.error(e);
+      setError(e.message || 'حدث خطأ أثناء حساب السعر.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
+      <div className="glass-card rounded-3xl max-w-md w-full p-5 border border-emerald-500/40 bg-slate-900/90">
+        <div className="flex justify-between items-center mb-3">
+          <h2 className="text-white font-bold text-lg">
+            حساب سعر مسبق (Prix Forfaitaire)
+          </h2>
+          <button
+            onClick={onClose}
+            className="text-slate-300 text-sm px-2 py-1 rounded-full border border-white/20 hover:bg-white/10"
+          >
+            إغلاق
+          </button>
+        </div>
+
+        <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">
+          أدخل عنوان الانطلاق والوجهة، أو استخدم GPS الحالي كنقطة انطلاق. سيتم حساب مسافة
+          الرحلة والوقت والسعر حسب الإعدادات (Base + km).
+        </p>
+
+        <GlassInput
+          label="عنوان الانطلاق (Pickup)"
+          value={pickup}
+          onChange={(e) => setPickup(e.target.value)}
+          placeholder="Rue de la Loi 16, Bruxelles..."
+        />
+
+        <button
+          onClick={handleUseCurrentGps}
+          disabled={loading}
+          className="w-full mb-3 text-[11px] px-3 py-2 rounded-2xl border border-emerald-500/40 text-emerald-200 bg-black/40 hover:bg-emerald-500/10 transition"
+        >
+          استعمال GPS الحالي كنقطة انطلاق
+        </button>
+
+        <GlassInput
+          label="عنوان الوجهة (Destination)"
+          value={destination}
+          onChange={(e) => setDestination(e.target.value)}
+          placeholder="Bruxelles Midi, Airport..."
+        />
+
+        {error && (
+          <p className="text-xs text-red-400 mb-2">{error}</p>
+        )}
+
+        <GlassButton onClick={handleCalculate} disabled={loading}>
+          {loading ? 'جاري الحساب...' : 'حساب السعر الآن'}
+        </GlassButton>
+
+        {result && (
+          <div className="mt-4 p-3 rounded-2xl bg-black/60 border border-white/10 text-xs text-slate-200 space-y-1">
+            <div><span className="text-slate-400">المسافة:</span> {result.distanceKm.toFixed(2)} km</div>
+            <div><span className="text-slate-400">الوقت التقريبي:</span> {result.durationMin.toFixed(0)} دقيقة</div>
+            <div><span className="text-slate-400">السعر المقترح (حسب الخوارزمية):</span> <span className="font-bold text-emerald-400">€ {result.fare.toFixed(2)}</span></div>
+            <p className="text-[10px] text-slate-400 mt-1">
+              * هذا السعر ثابت (Forfait) يتم الاتفاق عليه مع الزبون قبل بدء الرحلة.
+              السعر النهائي للفاتورة يتم إدخاله يدوياً في شاشة العداد عند الإيقاف (TTC).
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 // ========== Taximeter with Persistent Active Trip ==========
 const ACTIVE_KEY = 'jouw_taxi_os_active_trip';
 
-const Taximeter = ({ config, onTripFinished, onSaveToHistory, pushChironLog, onActiveChange, t, lang }) => {
+const Taximeter = ({ config, onTripFinished, onSaveToHistory, pushChironLog, onActiveChange, onOpenPriceCalc, t, lang }) => {
   const [isActive, setIsActive] = useState(false);
   const [mode, setMode] = useState('gps'); // gps / simulation
   const [tripType, setTripType] = useState('TAXI');
@@ -396,7 +557,7 @@ const Taximeter = ({ config, onTripFinished, onSaveToHistory, pushChironLog, onA
   const lastPosRef = useRef({ lat: null, lng: null });
   const watchId = useRef(null);
 
-  // Initial GPS watcher to keep last position updated (for start/stop)
+  // Initial GPS watcher to keep last position updated
   useEffect(() => {
     if (!('geolocation' in navigator)) return;
     const id = navigator.geolocation.watchPosition(
@@ -406,9 +567,7 @@ const Taximeter = ({ config, onTripFinished, onSaveToHistory, pushChironLog, onA
           lng: pos.coords.longitude
         };
       },
-      () => {
-        // ignore
-      },
+      () => {},
       { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
     );
     return () => {
@@ -448,9 +607,7 @@ const Taximeter = ({ config, onTripFinished, onSaveToHistory, pushChironLog, onA
     } catch (e) {
       console.error('Failed to restore active trip', e);
     }
-  }, []);
-
-  // When base fare changes and no active trip => reset price
+  }, [config.waitRate, onActiveChange]);
 
   const persistActive = (nextStats, nextTrip, activeFlag, type = tripType) => {
     try {
@@ -493,7 +650,6 @@ const Taximeter = ({ config, onTripFinished, onSaveToHistory, pushChironLog, onA
             waitingTime: isWaiting
               ? prev.waitingTime + 1
               : prev.waitingTime,
-            // price is not auto-updated anymore; it will be provided manually as TTC at the end of the trip
           };
 
           if (tripInfo) {
@@ -535,20 +691,17 @@ const Taximeter = ({ config, onTripFinished, onSaveToHistory, pushChironLog, onA
         navigator.geolocation.clearWatch(watchId.current);
       }
     };
-  }, [isActive, mode, config.kmRate, config.waitRate, tripInfo]);
+  }, [isActive, mode, tripInfo]);
 
   const handleStart = async () => {
-    // Require mandatory vehicle + driver identifiers
     if (!config.defaultPlate || !config.driverCardId) {
       alert('يجب تعبئة لوحة السيارة ورقم bestuurderspas في إعدادات النظام قبل بدء الرحلة.');
       return;
     }
-    // In TEST environment, real trips are disabled
     if (config.env === 'TEST') {
       alert('لا يمكن تشغيل رحلة في وضع TEST. استخدم أزرار الاختبار فقط أو غيّر الوضع إلى PROD.');
       return;
     }
-    // must have trip type
     if (!tripType) {
       alert('يرجى اختيار نوع الرحلة قبل البدء.');
       return;
@@ -558,7 +711,6 @@ const Taximeter = ({ config, onTripFinished, onSaveToHistory, pushChironLog, onA
     const iso = now.toISOString();
 
     let { lat, lng } = lastPosRef.current;
-    // one-shot geolocation if we don't have a last position
     if ((lat == null || lng == null) && 'geolocation' in navigator) {
       try {
         const pos = await new Promise((resolve, reject) => {
@@ -571,7 +723,7 @@ const Taximeter = ({ config, onTripFinished, onSaveToHistory, pushChironLog, onA
         lng = pos.coords.longitude;
         lastPosRef.current = { lat, lng };
       } catch {
-        // fallback to 0,0
+        // ignore
       }
     }
 
@@ -606,7 +758,6 @@ const Taximeter = ({ config, onTripFinished, onSaveToHistory, pushChironLog, onA
     onActiveChange?.(true);
     persistActive(initialStats, trip, true, tripType);
 
-    // best-effort reverse geocode for start
     if (lat != null && lng != null) {
       reverseGeocode(lat, lng).then((addr) => {
         if (!addr) return;
@@ -680,7 +831,6 @@ const Taximeter = ({ config, onTripFinished, onSaveToHistory, pushChironLog, onA
     let chironOk = false;
     let needsChironSync = false;
 
-    // حاول إرسال aankomst مباشرة إذا كان هناك اتصال
     const hasNavigator = typeof navigator !== 'undefined';
     if (hasNavigator && navigator.onLine) {
       setStatusText('Sending aankomst...');
@@ -691,8 +841,7 @@ const Taximeter = ({ config, onTripFinished, onSaveToHistory, pushChironLog, onA
         chironOk = true;
       } catch (e) {
         console.error(e);
-        // في حالة خطأ شبكة، نضعها في قائمة المزامنة
-        if (e.message && e.message.toLowerCase().includes('fetch') || !navigator.onLine) {
+        if ((e.message && e.message.toLowerCase().includes('fetch')) || !navigator.onLine) {
           needsChironSync = true;
           setStatusText('سيتم إرسال الرحلة تلقائياً عند توفر الاتصال.');
           pushChironLog('STOP OFFLINE QUEUED', e.message);
@@ -703,13 +852,11 @@ const Taximeter = ({ config, onTripFinished, onSaveToHistory, pushChironLog, onA
         }
       }
     } else {
-      // لا يوجد اتصال بالإنترنت حالياً → نؤجل الإرسال
       needsChironSync = true;
       setStatusText('Offline - سيتم إرسال الرحلة تلقائياً عند توفر الاتصال.');
       pushChironLog('STOP OFFLINE', 'Trip queued for later sync.');
     }
 
-    // reverse geocode end address
     if (lat != null && lng != null) {
       try {
         const addr = await reverseGeocode(lat, lng);
@@ -735,6 +882,7 @@ const Taximeter = ({ config, onTripFinished, onSaveToHistory, pushChironLog, onA
 
     openInvoicePrintWindow(finishedTrip, config);
   };
+
   return (
     <GlassCard className="p-5 relative overflow-hidden border border-emerald-500/50 shadow-[0_0_40px_rgba(16,185,129,0.25)]">
       <div className="absolute inset-x-10 -top-10 h-24 bg-emerald-500/20 blur-3xl pointer-events-none"></div>
@@ -763,27 +911,39 @@ const Taximeter = ({ config, onTripFinished, onSaveToHistory, pushChironLog, onA
         </button>
       </div>
 
-      {/* Trip type selector (only when not active) */}
+      {/* Trip type selector */}
       {!isActive && (
         <div className="mb-3">
           <label className="block text-[10px] font-bold text-slate-400 mb-1 uppercase tracking-wider ml-1">
             {t('trip_type')}
           </label>
           <div className="flex gap-1 flex-wrap">
-            {TRIP_TYPES.map((t) => (
+            {TRIP_TYPES.map((tp) => (
               <button
-                key={t}
-                onClick={() => setTripType(t)}
+                key={tp}
+                onClick={() => setTripType(tp)}
                 className={`px-3 py-1 rounded-full text-[10px] border transition-all ${
-                  tripType === t
+                  tripType === tp
                     ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200'
                     : 'bg-black/40 border-white/10 text-slate-300'
                 }`}
               >
-                {t}
+                {tp}
               </button>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* زر حساب السعر المسبق */}
+      {!isActive && (
+        <div className="mb-3">
+          <button
+            onClick={onOpenPriceCalc}
+            className="w-full text-[11px] px-3 py-2 rounded-2xl border border-blue-500/50 text-blue-200 bg-black/40 hover:bg-blue-500/10 transition"
+          >
+            حساب سعر مسبق (Prix forfaitaire) قبل بدء الرحلة
+          </button>
         </div>
       )}
 
@@ -941,25 +1101,37 @@ const SettingsScreen = ({ config, setConfig, chironLogs, onTestOne, onTestFive, 
           }
           placeholder="1234567890"
         />
-        <div className="mt-3">
+      </GlassCard>
+
+      {/* إعدادات التسعير */}
+      <GlassCard className="p-5">
+        <h2 className="text-lg font-bold text-white mb-3 border-b border-white/10 pb-2">
+          إعدادات التسعير (Prix forfaitaire)
+        </h2>
+        <div className="grid grid-cols-2 gap-3">
           <GlassInput
-            label={lang === 'ar' ? 'نسبة TVA %' : lang === 'nl' ? 'BTW %' : 'TVA %'}
+            label="السعر الأساسي (€ Base Fare)"
             type="number"
-            value={config.vatRate ? (config.vatRate * 100).toFixed(0) : 6}
-            onChange={(e) => {
-              const v = Number(e.target.value);
-              const rate = isNaN(v) || v <= 0 ? 0.06 : v / 100;
-              setConfig({ ...config, vatRate: rate });
-            }}
-            placeholder="6"
+            value={config.baseFare}
+            onChange={(e) =>
+              setConfig({ ...config, baseFare: Number(e.target.value || 0) })
+            }
+            placeholder="5"
+          />
+          <GlassInput
+            label="سعر الكيلومتر (€ / km)"
+            type="number"
+            value={config.kmRate}
+            onChange={(e) =>
+              setConfig({ ...config, kmRate: Number(e.target.value || 0) })
+            }
+            placeholder="1.8"
           />
         </div>
-        <p className="text-[10px] text-slate-400 mt-1">
-          {lang === 'ar'
-            ? '* يتم حساب TVA تلقائياً في الفاتورة حسب النسبة المحددة في الإعدادات، مع تحويل السعر من TTC إلى HT.'
-            : lang === 'nl'
-            ? '* De BTW wordt automatisch berekend op de factuur volgens het ingestelde percentage, met omzetting van TTC naar HT.'
-            : '* La TVA est calculée automatiquement sur la facture selon le pourcentage défini dans les paramètres, avec conversion du TTC vers le HT.'}
+        <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
+          * يتم حساب السعر قبل الرحلة عن طريق: Base + km × Rate، مع تقريب السعر لأقرب نصف يورو (0.5€).<br />
+          * هذا السعر ثابت ومتفق عليه مسبقاً مع الزبون (Prix Forfaitaire / VVB / Taxi Vlaanderen بدون عداد).<br />
+          * السعر النهائي الذي يُرسل للفاتورة هو المبلغ TTC الذي تدخله في شاشة العداد عند الإيقاف.
         </p>
       </GlassCard>
 
@@ -1052,7 +1224,7 @@ const SettingsScreen = ({ config, setConfig, chironLogs, onTestOne, onTestFive, 
           <p className="text-[10px] text-slate-500 mt-1 leading-relaxed">
             * يُفضل تنفيذ الاختبارات في بيئة TEST.<br />
             * زر 5 رحلات يرسل 5 مرات (reservatie → vertrek → aankomst) كما تطلب Chiron قبل تفعيل PROD.<br />
-            * تقرير الاختبار الآن يتضمن نوع الرحلة، التوقيت، GPS، المسافة والسعر، ويمكن تقديمه للبلدية كإثبات.
+            * تقرير الاختبار يحتوي على نوع الرحلة، التوقيت، GPS، المسافة والسعر، ويمكن تقديمه للبلدية كإثبات.
           </p>
         </div>
       </GlassCard>
@@ -1194,13 +1366,13 @@ const App = () => {
     return (translations[lang] && translations[lang][key]) || translations.ar[key] || key;
   };
 
-
-const [tab, setTab] = useState('meter');
-const [settingsUnlocked, setSettingsUnlocked] = useState(false);
-const [settingsPin, setSettingsPin] = useState('');
-const SETTINGS_PIN = '699381612';
+  const [tab, setTab] = useState('meter');
+  const [settingsUnlocked, setSettingsUnlocked] = useState(false);
+  const [settingsPin, setSettingsPin] = useState('');
+  const SETTINGS_PIN = '699381612';
 
   const [isTripActive, setIsTripActive] = useState(false);
+  const [showPriceCalc, setShowPriceCalc] = useState(false);
 
   const [config, setConfig] = useState(() => {
     try {
@@ -1214,8 +1386,8 @@ const SETTINGS_PIN = '699381612';
         companyEmail: '',
         companyAddress: '',
         driverName: '',
-        baseFare: 4.5,
-        kmRate: 2.3,
+        baseFare: 5,
+        kmRate: 1.8,
         waitRate: 0.5,
         env: 'TEST',
         clientId: '',
@@ -1225,8 +1397,7 @@ const SETTINGS_PIN = '699381612';
         prodClientId: '',
         prodClientSecret: '',
         vatRate: 0.06,
-        vatRate: 0.06,
-        ...saved
+        ...(saved || {})
       };
     } catch {
       return {
@@ -1238,8 +1409,8 @@ const SETTINGS_PIN = '699381612';
         companyEmail: '',
         companyAddress: '',
         driverName: '',
-        baseFare: 4.5,
-        kmRate: 2.3,
+        baseFare: 5,
+        kmRate: 1.8,
         waitRate: 0.5,
         env: 'TEST',
         clientId: '',
@@ -1252,36 +1423,6 @@ const SETTINGS_PIN = '699381612';
       };
     }
   });
-// تحميل إعدادات الشركة الافتراضية من ملف JSON (للإصدارات المخصصة لكل شركة)
-useEffect(() => {
-  fetch('/company-config.json')
-    .then((res) => {
-      if (!res.ok) return null;
-      return res.json();
-    })
-    .then((data) => {
-      if (!data) return;
-      setConfig((prev) => {
-        const merged = { ...prev, ...data };
-        try {
-          localStorage.setItem('jouw_taxi_os_cfg', JSON.stringify(merged));
-        } catch {}
-        return merged;
-      });
-    })
-    .catch(() => {
-      // إذا لم يوجد الملف أو حدث خطأ، نستمر بالإعدادات الحالية
-    });
-}, []);
-useEffect(() => {
-  try {
-    const saved = localStorage.getItem('jouw_taxi_os_settings_unlocked');
-    if (saved === '1') {
-      setSettingsUnlocked(true);
-    }
-  } catch {}
-}, []);
-
 
   const [history, setHistory] = useState(() => {
     try {
@@ -1291,62 +1432,9 @@ useEffect(() => {
       return [];
     }
   });
+
   const [chironLogs, setChironLogs] = useState([]);
   const [lastTestReport, setLastTestReport] = useState(null);
-
-  useEffect(() => {
-    localStorage.setItem('jouw_taxi_os_cfg', JSON.stringify(config));
-  }, [config]);
-
-  useEffect(() => {
-    localStorage.
-useEffect(() => {
-  const syncPending = async () => {
-    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
-    const pending = history.filter((trip) => trip.needsChironSync && !trip.chironOk);
-    if (!pending.length) return;
-
-    for (const trip of pending.slice().reverse()) {
-      try {
-        const cfg = buildChironConfig(config);
-        const r1 = await sendChironStatus('reservatie', trip, cfg);
-        pushChironLog('SYNC reservatie', r1);
-        const r2 = await sendChironStatus('vertrek', trip, cfg);
-        pushChironLog('SYNC vertrek', r2);
-        const r3 = await sendChironStatus('aankomst', trip, cfg);
-        pushChironLog('SYNC aankomst', r3);
-
-        setHistory((prev) =>
-          prev.map((t) =>
-            t.ritnummer === trip.ritnummer
-              ? { ...t, chironOk: true, needsChironSync: false }
-              : t
-          )
-        );
-      } catch (e) {
-        console.error(e);
-        pushChironLog('SYNC ERROR', e.message);
-      }
-    }
-  };
-
-  syncPending();
-
-  const handleOnline = () => {
-    syncPending();
-  };
-
-  if (typeof window !== 'undefined') {
-    window.addEventListener('online', handleOnline);
-  }
-  return () => {
-    if (typeof window !== 'undefined') {
-      window.removeEventListener('online', handleOnline);
-    }
-  };
-}, [history, config]);
-setItem('jouw_taxi_os_history', JSON.stringify(history));
-  }, [history]);
 
   const pushChironLog = (type, message) => {
     setChironLogs((prev) => [
@@ -1358,6 +1446,77 @@ setItem('jouw_taxi_os_history', JSON.stringify(history));
       ...prev
     ]);
   };
+
+  // Load settings unlocked state
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('jouw_taxi_os_settings_unlocked');
+      if (saved === '1') {
+        setSettingsUnlocked(true);
+      }
+    } catch {}
+  }, []);
+
+  // Persist config
+  useEffect(() => {
+    try {
+      localStorage.setItem('jouw_taxi_os_cfg', JSON.stringify(config));
+    } catch {}
+  }, [config]);
+
+  // Persist history
+  useEffect(() => {
+    try {
+      localStorage.setItem('jouw_taxi_os_history', JSON.stringify(history));
+    } catch {}
+  }, [history]);
+
+  // Sync pending trips with Chiron when online
+  useEffect(() => {
+    const syncPending = async () => {
+      if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+      const pending = history.filter((trip) => trip.needsChironSync && !trip.chironOk);
+      if (!pending.length) return;
+
+      for (const trip of pending.slice().reverse()) {
+        try {
+          const cfg = buildChironConfig(config);
+          const r1 = await sendChironStatus('reservatie', trip, cfg);
+          pushChironLog('SYNC reservatie', r1);
+          const r2 = await sendChironStatus('vertrek', trip, cfg);
+          pushChironLog('SYNC vertrek', r2);
+          const r3 = await sendChironStatus('aankomst', trip, cfg);
+          pushChironLog('SYNC aankomst', r3);
+
+          setHistory((prev) =>
+            prev.map((t) =>
+              t.ritnummer === trip.ritnummer
+                ? { ...t, chironOk: true, needsChironSync: false }
+                : t
+            )
+          );
+        } catch (e) {
+          console.error(e);
+          pushChironLog('SYNC ERROR', e.message);
+        }
+      }
+    };
+
+    syncPending();
+
+    const handleOnline = () => {
+      syncPending();
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', handleOnline);
+    }
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('online', handleOnline);
+      }
+    };
+  }, [history, config]);
 
   const handleTestOne = async () => {
     if (!config.defaultPlate || !config.driverCardId) {
@@ -1448,11 +1607,11 @@ setItem('jouw_taxi_os_history', JSON.stringify(history));
           price: 12.0 + i
         };
         const r1 = await sendChironStatus('reservatie', dummyTrip, buildChironConfig(config));
-        pushChironLog(`TEST5[${i+1}] reservatie`, r1);
+        pushChironLog(`TEST5[${i + 1}] reservatie`, r1);
         const r2 = await sendChironStatus('vertrek', dummyTrip, buildChironConfig(config));
-        pushChironLog(`TEST5[${i+1}] vertrek`, r2);
+        pushChironLog(`TEST5[${i + 1}] vertrek`, r2);
         const r3 = await sendChironStatus('aankomst', dummyTrip, buildChironConfig(config));
-        pushChironLog(`TEST5[${i+1}] aankomst`, r3);
+        pushChironLog(`TEST5[${i + 1}] aankomst`, r3);
 
         trips.push({
           ritnummer: dummyTrip.ritnummer,
@@ -1512,31 +1671,31 @@ setItem('jouw_taxi_os_history', JSON.stringify(history));
     openInvoicePrintWindow(trip, config);
   };
 
-const handleResend = async (trip) => {
-  if (trip.chironOk && !trip.needsChironSync) {
-    alert('تم إرسال هذه الرحلة مسبقاً إلى Chiron ولا يمكن إعادة إرسالها.');
-    return;
-  }
-  try {
-    const updatedTrip = { ...trip };
-    const cfg = buildChironConfig(config);
-    const r1 = await sendChironStatus('reservatie', updatedTrip, cfg);
-    pushChironLog('RESEND reservatie', r1);
-    const r2 = await sendChironStatus('vertrek', updatedTrip, cfg);
-    pushChironLog('RESEND vertrek', r2);
-    const r3 = await sendChironStatus('aankomst', updatedTrip, cfg);
-    pushChironLog('RESEND aankomst', r3);
-    setHistory((prev) =>
-      prev.map((t) =>
-        t.ritnummer === trip.ritnummer ? { ...t, chironOk: true, needsChironSync: false } : t
-      )
-    );
-    alert('تمت إعادة إرسال الرحلة إلى Chiron بنجاح.');
-  } catch (e) {
-    pushChironLog('RESEND ERROR', e.message);
-    alert('خطأ أثناء إعادة الإرسال إلى Chiron: ' + e.message);
-  }
-};
+  const handleResend = async (trip) => {
+    if (trip.chironOk && !trip.needsChironSync) {
+      alert('تم إرسال هذه الرحلة مسبقاً إلى Chiron ولا يمكن إعادة إرسالها.');
+      return;
+    }
+    try {
+      const updatedTrip = { ...trip };
+      const cfg = buildChironConfig(config);
+      const r1 = await sendChironStatus('reservatie', updatedTrip, cfg);
+      pushChironLog('RESEND reservatie', r1);
+      const r2 = await sendChironStatus('vertrek', updatedTrip, cfg);
+      pushChironLog('RESEND vertrek', r2);
+      const r3 = await sendChironStatus('aankomst', updatedTrip, cfg);
+      pushChironLog('RESEND aankomst', r3);
+      setHistory((prev) =>
+        prev.map((t) =>
+          t.ritnummer === trip.ritnummer ? { ...t, chironOk: true, needsChironSync: false } : t
+        )
+      );
+      alert('تمت إعادة إرسال الرحلة إلى Chiron بنجاح.');
+    } catch (e) {
+      pushChironLog('RESEND ERROR', e.message);
+      alert('خطأ أثناء إعادة الإرسال إلى Chiron: ' + e.message);
+    }
+  };
 
   const handlePrintTestReport = () => {
     if (lastTestReport) {
@@ -1560,89 +1719,93 @@ const handleResend = async (trip) => {
       </div>
 
       <div className="relative z-10">
-      <div className="flex justify-end mb-2">
-        <div className="inline-flex bg-black/40 rounded-full p-1 border border-white/10 text-[10px] font-bold">
-          <button
-            onClick={() => setLang('ar')}
-            className={`px-2 py-0.5 rounded-full ${lang === 'ar' ? 'bg-white text-black' : 'text-slate-300'}`}
-          >
-            AR
-          </button>
-          <button
-            onClick={() => setLang('nl')}
-            className={`px-2 py-0.5 rounded-full ${lang === 'nl' ? 'bg-white text-black' : 'text-slate-300'}`}
-          >
-            NL
-          </button>
-          <button
-            onClick={() => setLang('fr')}
-            className={`px-2 py-0.5 rounded-full ${lang === 'fr' ? 'bg-white text-black' : 'text-slate-300'}`}
-          >
-            FR
-          </button>
+        <div className="flex justify-end mb-2">
+          <div className="inline-flex bg-black/40 rounded-full p-1 border border-white/10 text-[10px] font-bold">
+            <button
+              onClick={() => setLang('ar')}
+              className={`px-2 py-0.5 rounded-full ${lang === 'ar' ? 'bg-white text-black' : 'text-slate-300'}`}
+            >
+              AR
+            </button>
+            <button
+              onClick={() => setLang('nl')}
+              className={`px-2 py-0.5 rounded-full ${lang === 'nl' ? 'bg-white text-black' : 'text-slate-300'}`}
+            >
+              NL
+            </button>
+            <button
+              onClick={() => setLang('fr')}
+              className={`px-2 py-0.5 rounded-full ${lang === 'fr' ? 'bg-white text-black' : 'text-slate-300'}`}
+            >
+              FR
+            </button>
+          </div>
         </div>
-      </div>
+
         <Logo companyName={config.companyName} />
 
         {tab === 'meter' && (
           <Taximeter
-            t={t} lang={lang} config={config}
+            t={t}
+            lang={lang}
+            config={config}
             onTripFinished={handleTripFinished}
             onSaveToHistory={handleSaveToHistory}
             pushChironLog={pushChironLog}
             onActiveChange={setIsTripActive}
+            onOpenPriceCalc={() => setShowPriceCalc(true)}
           />
         )}
 
-{tab === 'settings' && (
-  !settingsUnlocked ? (
-    <div className="space-y-4 pb-28">
-      <GlassCard className="p-5">
-        <h2 className="text-lg font-bold text-white mb-3 border-b border-white/10 pb-2">
-          قفل الإعدادات
-        </h2>
-        <p className="text-sm text-slate-300 mb-3">
-          يرجى إدخال رمز الوصول للإعدادات الخاصة بالشركة.
-        </p>
-        <GlassInput
-          label="رمز الإعدادات"
-          value={settingsPin}
-          onChange={(e) => setSettingsPin(e.target.value)}
-          placeholder="*********"
-          type="password"
-        />
-        <div className="flex justify-end mt-3">
-          <GlassButton
-            onClick={() => {
-              if (settingsPin === SETTINGS_PIN) {
-                setSettingsUnlocked(true);
-                try {
-                  localStorage.setItem('jouw_taxi_os_settings_unlocked', '1');
-                } catch {}
-              } else {
-                alert('رمز غير صحيح. يرجى المحاولة مرة أخرى.');
-              }
-            }}
-          >
-            دخول
-          </GlassButton>
-        </div>
-      </GlassCard>
-    </div>
-  ) : (
-    <SettingsScreen
-      config={config}
-      setConfig={setConfig}
-      chironLogs={chironLogs}
-      onTestOne={handleTestOne}
-      onTestFive={handleTestFive}
-      lastTestReport={lastTestReport}
-      onPrintTestReport={handlePrintTestReport}
-      t={t}
-      lang={lang}
-    />
-  )
-)}
+        {tab === 'settings' && (
+          !settingsUnlocked ? (
+            <div className="space-y-4 pb-28">
+              <GlassCard className="p-5">
+                <h2 className="text-lg font-bold text-white mb-3 border-b border-white/10 pb-2">
+                  قفل الإعدادات
+                </h2>
+                <p className="text-sm text-slate-300 mb-3">
+                  يرجى إدخال رمز الوصول للإعدادات الخاصة بالشركة.
+                </p>
+                <GlassInput
+                  label="رمز الإعدادات"
+                  value={settingsPin}
+                  onChange={(e) => setSettingsPin(e.target.value)}
+                  placeholder="*********"
+                  type="password"
+                />
+                <div className="flex justify-end mt-3">
+                  <GlassButton
+                    onClick={() => {
+                      if (settingsPin === SETTINGS_PIN) {
+                        setSettingsUnlocked(true);
+                        try {
+                          localStorage.setItem('jouw_taxi_os_settings_unlocked', '1');
+                        } catch {}
+                      } else {
+                        alert('رمز غير صحيح. يرجى المحاولة مرة أخرى.');
+                      }
+                    }}
+                  >
+                    دخول
+                  </GlassButton>
+                </div>
+              </GlassCard>
+            </div>
+          ) : (
+            <SettingsScreen
+              config={config}
+              setConfig={setConfig}
+              chironLogs={chironLogs}
+              onTestOne={handleTestOne}
+              onTestFive={handleTestFive}
+              lastTestReport={lastTestReport}
+              onPrintTestReport={handlePrintTestReport}
+              t={t}
+              lang={lang}
+            />
+          )
+        )}
 
         {tab === 'history' && (
           <HistoryScreen
@@ -1652,6 +1815,13 @@ const handleResend = async (trip) => {
             history={history}
             onReprint={handleReprint}
             onResend={handleResend}
+          />
+        )}
+
+        {showPriceCalc && (
+          <PriceCalculatorModal
+            config={config}
+            onClose={() => setShowPriceCalc(false)}
           />
         )}
       </div>
