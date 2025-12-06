@@ -132,7 +132,7 @@ const buildChironConfig = (config) => {
 };
 
 const sendChironStatus = async (status, trip, cfg) => {
-  const res = await fetch('http://localhost:3001/api/chiron/send', {
+  const res = await fetch('https://taxi-os-v2.onrender.com/api/chiron/send', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ status, trip, cfg })
