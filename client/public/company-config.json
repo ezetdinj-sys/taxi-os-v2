@@ -1,16 +1,18 @@
 {
   "companyName": "JOUW DRIVER",
-  "kboNumber": "BE0799499833",
+  "kboNumber": "0799499833",
   "companyAddress": "Chaussée de Waterloo 200, 1640 Sint-Genesius-Rode",
   "companyPhone": "+32 470 00 00 00",
   "companyEmail": "info@jouwdriver.be",
   "driverName": "Jalal EZETDIN",
-  "defaultPlate": "1-TXA-260",
-  "driverCardId": "1234567890",
+  "defaultPlate": "TXAح260",
+  "driverCardId": "13616",
   "env": "TEST",
-  "testClientId": "CHIRON_TEST_CLIENT_ID_HERE",
-  "testClientSecret": "CHIRON_TEST_SECRET_HERE",
-  "prodClientId": "CHIRON_PROD_CLIENT_ID_HERE",
-  "prodClientSecret": "CHIRON_PROD_SECRET_HERE",
+  "testClientId": "WCVju1GxsMTtKcXa84jevGpQUWl7rssk",
+  "testClientSecret": "qrjUgA2jJ300NAFO",
+  "prodClientId": "O2SUauuM9bcQVgOtGLeOMUcDmxq2kwp0
+",
+  "prodClientSecret": "f9bOUEEH8Y2Fevtj
+",
   "vatRate": 0.06
 }
